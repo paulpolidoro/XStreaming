@@ -19,6 +19,10 @@ import Orientation from 'react-native-orientation-locker';
 import Spinner from '../components/Spinner';
 import {useSelector} from 'react-redux';
 import XcloudApi from '../xCloud';
+import {
+  filterUnreachableRemoteCandidates,
+  preferPublicIceCandidates,
+} from '../xCloud/teredoCandidates';
 import WebApi from '../web';
 import {getSettings, saveSettings} from '../store/settingStore';
 import {saveSettings as saveGamepadLayout} from '../store/gamepadStore';
@@ -245,6 +249,7 @@ export function NativeStreamScreenBase({
     React.useState(false);
   const [openMicro, setOpenMicro] = React.useState(false);
   const [isInPictureInPicture, setIsInPictureInPicture] = React.useState(false);
+  const isInPictureInPictureRef = React.useRef(false);
   const xHomeApiRef = React.useRef<any>(undefined);
   const xCloudApiRef = React.useRef<any>(undefined);
   const isRumbling = React.useRef(false);
@@ -392,7 +397,10 @@ export function NativeStreamScreenBase({
 
   const showNativeInputDialog = React.useCallback(
     async (options: any) => {
-      if (isInPictureInPicture || !NativeInputDialog?.showTextInput) {
+      if (
+        isInPictureInPictureRef.current ||
+        !NativeInputDialog?.showTextInput
+      ) {
         return null;
       }
 
@@ -402,7 +410,7 @@ export function NativeStreamScreenBase({
         return null;
       }
     },
-    [isInPictureInPicture],
+    [],
   );
 
   const openSystemKeyboardDialog = React.useCallback(
@@ -865,6 +873,7 @@ export function NativeStreamScreenBase({
       PICTURE_IN_PICTURE_MODE_CHANGED,
       event => {
         const nextIsInPip = !!event?.isInPictureInPictureMode;
+        isInPictureInPictureRef.current = nextIsInPip;
         setIsInPictureInPicture(nextIsInPip);
         if (nextIsInPip) {
           setShowModal(false);
@@ -993,7 +1002,7 @@ export function NativeStreamScreenBase({
           if (
             keyName === 'Menu' &&
             !portraitMode &&
-            !isInPictureInPicture &&
+            !isInPictureInPictureRef.current &&
             !menuLongPressTimer.current
           ) {
             menuLongPressTriggered.current = false;
@@ -1461,6 +1470,9 @@ export function NativeStreamScreenBase({
           if (portraitMode || _settings.show_virtual_gamead) {
             setShowVirtualGamepad(true);
           }
+          if (_settings.show_performance) {
+            setShowPerformance(true);
+          }
 
           setRemote(remoteStream.current.toURL());
 
@@ -1814,7 +1826,19 @@ export function NativeStreamScreenBase({
 
       streamApi
         .startSession(route.params?.sessionId, _settings.resolution)
-        .then(() => {
+        .then(configuration => {
+          const serverDetails = configuration?.serverDetails;
+          const stunServers = [
+            ...(Array.isArray(serverDetails?.stunServerAddresses)
+              ? serverDetails.stunServerAddresses
+              : []),
+            serverDetails?.stunServerAddress,
+          ];
+          stunServers.forEach(stunServer => {
+            if (typeof stunServer === 'string' && stunServer.trim()) {
+              webrtcClient.addStunServer(stunServer.trim());
+            }
+          });
           setLoadingText(
             `${t('Configuration obtained successfully, initiating offer...')}`,
           );
@@ -1834,35 +1858,43 @@ export function NativeStreamScreenBase({
                 const sdpDetails = JSON.parse(sdpResponse.exchangeResponse);
                 webrtcClient.setRemoteOffer(sdpDetails.sdp).then(() => {
                   setLoadingText(`${t('Ready to send ICE...')}`);
-                  const iceCandidates = webrtcClient.getIceCandidates();
-                  streamApi
-                    .sendICECandidates(iceCandidates)
-                    .then(iceDetails => {
-                      log.info(
-                        'Client - ICE iceDetails:',
-                        JSON.stringify(iceDetails),
-                      );
-                      webrtcClient.setIceCandidates(iceDetails);
-                      setLoadingText(`${t('Exchange ICE successfully...')}`);
-                    })
-                    .catch(e => {
-                      if (scheduleReconnect()) {
-                        return;
-                      }
-                      Alert.alert(
-                        t('Warning'),
-                        '[sendICECandidates] fail:' + e,
-                        [
-                          {
-                            text: t('Confirm'),
-                            style: 'default',
-                            onPress: () => {
-                              exit();
+                  webrtcClient.waitForIceGathering().then(iceCandidates => {
+                    const localCandidates =
+                      preferPublicIceCandidates(iceCandidates);
+                    streamApi
+                      .sendICECandidates(localCandidates)
+                      .then(iceDetails => {
+                        log.info(
+                          'Client - ICE iceDetails:',
+                          JSON.stringify(iceDetails),
+                        );
+                        webrtcClient.setIceCandidates(
+                          filterUnreachableRemoteCandidates(
+                            iceDetails,
+                            iceCandidates,
+                          ),
+                        );
+                        setLoadingText(`${t('Exchange ICE successfully...')}`);
+                      })
+                      .catch(e => {
+                        if (scheduleReconnect()) {
+                          return;
+                        }
+                        Alert.alert(
+                          t('Warning'),
+                          '[sendICECandidates] fail:' + e,
+                          [
+                            {
+                              text: t('Confirm'),
+                              style: 'default',
+                              onPress: () => {
+                                exit();
+                              },
                             },
-                          },
-                        ],
-                      );
-                    });
+                          ],
+                        );
+                      });
+                  });
                 });
               })
               .catch(e => {
@@ -1959,6 +1991,7 @@ export function NativeStreamScreenBase({
       pipEventListener.current && pipEventListener.current.remove();
       audioGainEventListener.current && audioGainEventListener.current.remove();
       PipManager?.setAutoPipEnabled?.(false);
+      NativeInputDialog?.resetBrightness?.();
       if (timer.current) {
         clearInterval(timer.current);
         timer.current = null;
@@ -2018,7 +2051,6 @@ export function NativeStreamScreenBase({
     supportedSystemUis,
     scheduleReconnect,
     portraitMode,
-    isInPictureInPicture,
     setManualLeftThumbPressed,
     syncAutoSprint,
     syncLeftThumbButton,
@@ -2673,37 +2705,33 @@ export function NativeStreamScreenBase({
     GamepadManager.setCurrentScreen('');
     resumeGamepadNavigation();
 
-    const items: Array<{id: string; title: string}> = [];
+    const items: Array<{
+      id: string;
+      title: string;
+      type?: 'switch';
+      checked?: boolean;
+      danger?: boolean;
+    }> = [];
     if (connectState === CONNECTED) {
       items.push({
         id: 'togglePerformance',
-        title: t('Toggle Performance'),
+        title: t('Performance info'),
+        type: 'switch',
+        checked: showPerformance,
       });
       items.push({
         id: 'toggleVirtualGamepad',
-        title: t('Toggle Virtual Gamepad'),
+        title: t('Virtual gamepad'),
+        type: 'switch',
+        checked: showVirtualGamepad,
       });
-      if (showVirtualGamepad) {
-        items.push({
-          id: 'editVirtualGamepad',
-          title: t('Edit Virtual Gamepad'),
-        });
-      }
       if (settings.enable_microphone) {
         items.push({
           id: 'toggleMicrophone',
           title: openMicro ? t('Close Microphone') : t('Open Microphone'),
         });
       }
-      items.push({
-        id: 'pressNexus',
-        title: t('Press Nexus'),
-      });
       if (route.params?.streamType !== 'cloud') {
-        items.push({
-          id: 'longPressNexus',
-          title: t('Long press Nexus'),
-        });
         items.push({
           id: 'sendText',
           title: t('Send text'),
@@ -2722,15 +2750,42 @@ export function NativeStreamScreenBase({
         });
       }
     }
+    if (connectState === CONNECTED && PipManager?.enterPipMode) {
+      items.push({
+        id: 'minimize',
+        title: t('Minimize'),
+      });
+    }
     items.push({
       id: 'disconnect',
       title: t('Disconnect'),
+      danger: true,
     });
 
+    const switchListener = new NativeEventEmitter().addListener(
+      'NativeInputDialogSwitchChange',
+      event => {
+        const checked = !!event?.checked;
+        if (event?.id === 'togglePerformance') {
+          setShowPerformance(checked);
+          saveSettings({...getSettings(), show_performance: checked});
+        } else if (event?.id === 'toggleVirtualGamepad') {
+          if (!checked) {
+            clearMacroTimers();
+          }
+          setShowVirtualGamepad(checked);
+          saveSettings({...getSettings(), show_virtual_gamead: checked});
+        }
+      },
+    );
     const result = await showNativeOptionsDialog(items, {
       showAudioGainControl: connectState === CONNECTED,
       audioGain,
+      audioGainTitle: t('Volume'),
+      showBrightnessControl: true,
+      brightnessTitle: t('Brightness'),
     });
+    switchListener.remove();
     optionsDialogOpenRef.current = false;
 
     if (result?.action !== 'select') {
@@ -2741,32 +2796,11 @@ export function NativeStreamScreenBase({
     handleCloseModal();
 
     switch (result.id) {
-      case 'togglePerformance':
-        setShowPerformance(!showPerformance);
-        break;
-      case 'toggleVirtualGamepad':
-        if (showVirtualGamepad) {
-          clearMacroTimers();
-        }
-        setShowVirtualGamepad(!showVirtualGamepad);
-        break;
-      case 'editVirtualGamepad':
-        handleOpenGamepadEditor();
-        break;
       case 'toggleMicrophone':
         await handleToggleMic();
         break;
-      case 'pressNexus':
-        gpState.Nexus = 1;
-        setTimeout(() => {
-          gpState.Nexus = 0;
-        }, 120);
-        break;
-      case 'longPressNexus':
-        gpState.Nexus = 1;
-        setTimeout(() => {
-          gpState.Nexus = 0;
-        }, 1000);
+      case 'minimize':
+        PipManager?.enterPipMode?.().catch(() => {});
         break;
       case 'sendText':
         openSendTextDialog();
@@ -2788,7 +2822,6 @@ export function NativeStreamScreenBase({
     audioGain,
     connectState,
     handleCloseModal,
-    handleOpenGamepadEditor,
     handleToggleMic,
     isInPictureInPicture,
     openMicro,

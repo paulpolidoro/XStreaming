@@ -61,6 +61,8 @@ export default {
     'Search game': 'Buscar jogos',
     'Toggle Performance': 'Mostrar/ocultar informações de desempenho',
     'Toggle Virtual Gamepad': 'Mostrar/ocultar controle virtual',
+    'Performance info': 'Informações de desempenho',
+    Minimize: 'Minimizar',
     'Press Nexus': 'Pressionar Nexus',
     'Long press Nexus': 'Manter Nexus pressionado',
     Disconnect: 'Desconectar',

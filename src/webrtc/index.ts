@@ -14,6 +14,7 @@ import GamepadDriver from './Driver/Gamepad';
 
 import {getSettings} from '../store/settingStore';
 import {getServerData} from '../store/serverStore';
+import {normalizeIceCandidateLine} from '../xCloud/teredoCandidates';
 
 // import server from '../../server.json';
 
@@ -163,6 +164,67 @@ class webRTCClient {
       }
     }
     this._webrtcClient = new RTCPeerConnection(this._webrtcConfiguration);
+    this._openPeerConnection();
+  }
+
+  addStunServer(stunServer: string) {
+    const urls = /^(stun|stuns|turn|turns):/i.test(stunServer)
+      ? stunServer
+      : `stun:${stunServer}`;
+    if (
+      this._webrtcConfiguration.iceServers?.some(
+        (server: {urls?: string | string[]}) =>
+          server.urls === urls ||
+          (Array.isArray(server.urls) && server.urls.includes(urls)),
+      )
+    ) {
+      return;
+    }
+    this._webrtcConfiguration.iceServers?.push({urls});
+    const client = this._webrtcClient as
+      | (RTCPeerConnection & {
+          setConfiguration?: (configuration: object) => void;
+        })
+      | undefined;
+    client?.setConfiguration?.(this._webrtcConfiguration);
+  }
+
+  waitForIceGathering(timeoutMs = 5000): Promise<RTCIceCandidate[]> {
+    return new Promise(resolve => {
+      const client = this._webrtcClient;
+      if (!client || client.iceGatheringState === 'complete') {
+        resolve(this._iceCandidates);
+        return;
+      }
+
+      let finished = false;
+      const finish = () => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        client.removeEventListener('icegatheringstatechange', onState);
+        client.removeEventListener('icecandidate', onCandidate);
+        resolve(this._iceCandidates);
+      };
+      const onState = () => {
+        if (client.iceGatheringState === 'complete') {
+          finish();
+        }
+      };
+      const onCandidate = (event: {candidate?: RTCIceCandidate | null}) => {
+        if (!event.candidate) {
+          finish();
+        }
+      };
+
+      client.addEventListener('icegatheringstatechange', onState);
+      client.addEventListener('icecandidate', onCandidate);
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  _openPeerConnection() {
 
     this._openDataChannels();
 
@@ -285,25 +347,32 @@ class webRTCClient {
   }
 
   setIceCandidates(iceDetails: any) {
-    for (const candidate in iceDetails) {
-      if (iceDetails[candidate].candidate === 'a=end-of-candidates') {
-        continue;
+    const entries = Array.isArray(iceDetails)
+      ? iceDetails
+      : Object.values(iceDetails || {});
+    entries.forEach((entry: any) => {
+      const candidateLine = normalizeIceCandidateLine(entry?.candidate || '');
+      if (!candidateLine || candidateLine === 'a=end-of-candidates') {
+        return;
       }
 
       const hasInvalidTcpType =
-        iceDetails[candidate].candidate.includes('UDP') &&
-        iceDetails[candidate].candidate.includes('tcptype');
+        candidateLine.toLowerCase().includes('udp') &&
+        candidateLine.includes('tcptype');
       if (hasInvalidTcpType) {
-        // console.warn('Skipping invalid candidate:', iceDetails[candidate]);
-        continue;
+        return;
       }
 
-      this._webrtcClient?.addIceCandidate({
-        candidate: iceDetails[candidate].candidate,
-        sdpMid: iceDetails[candidate].sdpMid,
-        sdpMLineIndex: parseFloat(iceDetails[candidate].sdpMLineIndex),
-      });
-    }
+      this._webrtcClient
+        ?.addIceCandidate({
+          candidate: candidateLine,
+          sdpMid: entry.sdpMid ?? '0',
+          sdpMLineIndex: Number.parseFloat(entry.sdpMLineIndex ?? '0'),
+        })
+        .catch((error: unknown) => {
+          console.log('addIceCandidate error:', candidateLine, error);
+        });
+    });
   }
 
   close() {
@@ -697,7 +766,7 @@ class webRTCClient {
                   // Round Trip Time
                   const roundTripTime =
                     typeof stat.currentRoundTripTime !== 'undefined'
-                      ? stat.currentRoundTripTime * 1000
+                      ? Math.round(stat.currentRoundTripTime * 1000)
                       : '???';
                   performances.rtt = `${roundTripTime}ms`;
                 }

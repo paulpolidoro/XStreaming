@@ -34,13 +34,13 @@ const PerfPanel: React.FC<Props> = ({performance = {}, streamType}) => {
   const generatedFramegenFps = Number(framegen?.generatedFps);
   const totalFramegenFps = Number(framegen?.totalFps);
   const formatFps = (fps: number) =>
-    Number.isFinite(fps) && fps >= 0 ? fps.toFixed(1) : '-1';
+    Number.isFinite(fps) && fps >= 0 ? String(Math.round(fps)) : '-1';
   const fpsText =
     hasFrameGenFps && Number.isFinite(totalFramegenFps) && totalFramegenFps >= 0
-      ? `${t('FPS')}: ${formatFps(totalFramegenFps)} (${formatFps(
+      ? `${formatFps(totalFramegenFps)} (${formatFps(
           rawFramegenFps,
         )}+${formatFps(generatedFramegenFps)})`
-      : `${t('FPS')}: ${performance.fps || '-1'}`;
+      : formatFps(Number(performance.fps));
 
   React.useEffect(() => {
     const getBattery = () => {
@@ -76,7 +76,7 @@ const PerfPanel: React.FC<Props> = ({performance = {}, streamType}) => {
 
   let resolutionText = '';
   if (performance.resolution) {
-    resolutionText = performance.resolution;
+    resolutionText = String(performance.resolution).replace(/\s*x\s*/i, 'x');
     if (settings.resolution === 1081) {
       if (settings.fsr) {
         resolutionText = resolutionText + '(HQ + FSR)';
@@ -99,32 +99,12 @@ const PerfPanel: React.FC<Props> = ({performance = {}, streamType}) => {
       <View style={isHorizon ? styles.wrapperH : styles.wrapperV}>
         <View>
           <Text style={styles.text}>
-            {resolutionText || '-1'} {isHorizon ? '| ' : ''}{' '}
+            {resolutionText || '-1'}:{fpsText} {isHorizon ? '| ' : ''}
           </Text>
         </View>
         <View>
           <Text style={styles.text}>
             {rttLabel}: {performance.rtt || '-1'} {isHorizon ? '| ' : ''}
-          </Text>
-        </View>
-        <View>
-          <Text style={styles.text}>
-            {t('JIT')}: {performance.jit || '-1'} {isHorizon ? '| ' : ''}
-          </Text>
-        </View>
-        <View>
-          <Text style={styles.text}>
-            {fpsText} {isHorizon ? '| ' : ''}
-          </Text>
-        </View>
-        <View>
-          <Text style={styles.text}>
-            {t('FD')}: {performance.fl || '-1'} {isHorizon ? '| ' : ''}
-          </Text>
-        </View>
-        <View>
-          <Text style={styles.text}>
-            {t('PL')}: {performance.pl || '-1'} {isHorizon ? '| ' : ''}
           </Text>
         </View>
         <View>

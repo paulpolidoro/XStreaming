@@ -119,6 +119,7 @@ public class MainActivity extends ReactActivity implements UsbDriverService.UsbD
 
   public static MainActivity instance;
   private boolean autoPipEnabled = false;
+  private boolean reactHostKeptAliveForPip = false;
 
   private final Vector2d inputVector = new Vector2d();
 
@@ -871,9 +872,32 @@ public class MainActivity extends ReactActivity implements UsbDriverService.UsbD
     return builder.build();
   }
 
+  // A paused ReactInstanceManager freezes JS timers, which stops gamepad frames
+  // and session keepalives while the stream is still visible in PiP.
+  private void keepReactHostResumedForPip() {
+    if (getReactInstanceManager() == null) {
+      return;
+    }
+    getReactInstanceManager().onHostResume(this, this);
+    reactHostKeptAliveForPip = true;
+  }
+
+  private void releaseReactHostFromPip() {
+    if (!reactHostKeptAliveForPip) {
+      return;
+    }
+    reactHostKeptAliveForPip = false;
+    if (getReactInstanceManager() != null) {
+      getReactInstanceManager().onHostPause(this);
+    }
+  }
+
   @Override
   public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+    if (isInPictureInPictureMode) {
+      keepReactHostResumedForPip();
+    }
     WritableMap params = Arguments.createMap();
     params.putBoolean("isInPictureInPictureMode", isInPictureInPictureMode);
     sendEvent("pictureInPictureModeChanged", params);
@@ -974,6 +998,7 @@ public class MainActivity extends ReactActivity implements UsbDriverService.UsbD
   @Override
   protected void onResume() {
     super.onResume();
+    reactHostKeptAliveForPip = false;
 
     if (inputManager != null) {
       inputManager.registerInputDeviceListener(this, null);
@@ -1014,6 +1039,15 @@ public class MainActivity extends ReactActivity implements UsbDriverService.UsbD
       inputManager.unregisterInputDeviceListener(this);
     }
     super.onPause();
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode()) {
+      keepReactHostResumedForPip();
+    }
+  }
+
+  @Override
+  protected void onStop() {
+    releaseReactHostFromPip();
+    super.onStop();
   }
 
   @Override

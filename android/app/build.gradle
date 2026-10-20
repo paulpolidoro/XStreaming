@@ -176,11 +176,22 @@ def nanoRustTargetMap = [
 ]
 
 def nanoRustHostTag = { ndkDir ->
-    def armTag = file("${ndkDir}/toolchains/llvm/prebuilt/darwin-arm64")
-    if (armTag.exists()) {
-        return "darwin-arm64"
+    def prebuilt = file("${ndkDir}/toolchains/llvm/prebuilt")
+    def osName = System.getProperty("os.name").toLowerCase()
+    def candidates
+    if (osName.contains("windows")) {
+        candidates = ["windows-x86_64"]
+    } else if (osName.contains("mac")) {
+        candidates = ["darwin-arm64", "darwin-x86_64"]
+    } else {
+        candidates = ["linux-x86_64"]
     }
-    return "darwin-x86_64"
+    for (candidate in candidates) {
+        if (file("${prebuilt}/${candidate}").exists()) {
+            return candidate
+        }
+    }
+    return candidates[0]
 }
 
 def nanoRustClangPrefix = { triple ->
@@ -220,22 +231,31 @@ tasks.register("syncNanoRustJniLibs") {
             def prebuiltDir = file("${ndkDir}/toolchains/llvm/prebuilt/${hostTag}")
             def clangPrefix = nanoRustClangPrefix(targetTriple)
             def apiLevel = rootProject.ext.minSdkVersion
-            def clangPath = file("${prebuiltDir}/bin/${clangPrefix}${apiLevel}-clang")
-            def arPath = file("${prebuiltDir}/bin/llvm-ar")
+            def windowsHost = System.getProperty("os.name").toLowerCase().contains("windows")
+            def clangSuffix = windowsHost ? ".cmd" : ""
+            def arSuffix = windowsHost ? ".exe" : ""
+            def clangPath = file("${prebuiltDir}/bin/${clangPrefix}${apiLevel}-clang${clangSuffix}")
+            def arPath = file("${prebuiltDir}/bin/llvm-ar${arSuffix}")
 
             if (!clangPath.exists()) {
                 throw new GradleException("NDK clang not found for ${abi}: ${clangPath}")
             }
 
+            def cargoTargetRoot = System.getenv("CARGO_TARGET_DIR")
+            if (cargoTargetRoot == null || cargoTargetRoot.trim().isEmpty()) {
+                cargoTargetRoot = file("../../nano-rs/target").absolutePath
+            }
+
             exec {
                 workingDir file("../../nano-rs")
                 commandLine "cargo", "build", "--manifest-path", "Cargo.toml", "--target", targetTriple, "--release"
+                environment "CARGO_TARGET_DIR", cargoTargetRoot
                 environment "CARGO_TARGET_${targetTriple.toUpperCase().replace('-', '_')}_LINKER", clangPath.absolutePath
                 environment "CC_${targetTriple.replace('-', '_')}", clangPath.absolutePath
                 environment "AR_${targetTriple.replace('-', '_')}", arPath.absolutePath
             }
 
-            def builtLib = file("../../nano-rs/target/${targetTriple}/release/libnano_rs.so")
+            def builtLib = file("${cargoTargetRoot}/${targetTriple}/release/libnano_rs.so")
             if (!builtLib.exists()) {
                 throw new GradleException("Built Rust library missing for ${abi}: ${builtLib}")
             }

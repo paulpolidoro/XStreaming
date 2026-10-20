@@ -2,7 +2,10 @@ import axios, {AxiosRequestConfig, AxiosResponse} from 'axios';
 import {getSettings} from '../store/settingStore';
 import {storage} from '../store/mmkv';
 import {debugFactory} from '../utils/debug';
-import {expandTeredoCandidates} from './teredoCandidates';
+import {
+  appendServerCandidates,
+  expandTeredoCandidates,
+} from './teredoCandidates';
 import TokenStore from '../xal/tokenstore';
 import Msal from '../xal/msal';
 import Xal from '../xal';
@@ -36,6 +39,7 @@ export default class XcloudApi {
   private readonly authContext: AuthContext;
   private isStoped = false;
   private keepAlivePulseInSeconds = 20;
+  private serverDetails: any = null;
   private refreshGsTokenPromise: Promise<void> | null = null;
 
   constructor(
@@ -169,6 +173,7 @@ export default class XcloudApi {
         'Content-Type': 'application/json',
       },
     });
+    this.serverDetails = result.data?.serverDetails ?? null;
     log.info('[startSession] /configuration res:', JSON.stringify(result.data));
     const keepAlivePulseInSeconds = Number(
       result.data?.keepAlivePulseInSeconds,
@@ -669,7 +674,10 @@ export default class XcloudApi {
             const exchangeIce = JSON.parse(iceResult.exchangeResponse);
             resolve(
               this.type === 'home'
-                ? expandTeredoCandidates(exchangeIce, getSettings().ipv6)
+                ? appendServerCandidates(
+                    expandTeredoCandidates(exchangeIce, getSettings().ipv6),
+                    this.serverDetails,
+                  )
                 : exchangeIce,
             );
           }
