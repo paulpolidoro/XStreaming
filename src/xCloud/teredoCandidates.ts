@@ -193,7 +193,7 @@ function candidateParts(candidate: string) {
   };
 }
 
-function isPrivateIpv4(ip: string): boolean {
+export function isPrivateIpv4(ip: string): boolean {
   const match = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (!match) {
     return false;
@@ -215,16 +215,99 @@ function isPrivateIpv4(ip: string): boolean {
   return false;
 }
 
-function sameIpv4Subnet(first: string, second: string): boolean {
-  const left = first.split('.');
-  const right = second.split('.');
-  return (
-    left.length === 4 &&
-    right.length === 4 &&
-    left[0] === right[0] &&
-    left[1] === right[1] &&
-    left[2] === right[2]
+function ipv4ToInt(ip: string): number | null {
+  const match = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) {
+    return null;
+  }
+  const parts = [match[1], match[2], match[3], match[4]].map(Number);
+  if (parts.some(part => part > 255)) {
+    return null;
+  }
+  return (((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>>
+    0);
+}
+
+function sameIpv4Network(
+  first: string,
+  second: string,
+  subnetMask?: string,
+): boolean {
+  const left = ipv4ToInt(first);
+  const right = ipv4ToInt(second);
+  const mask = ipv4ToInt(subnetMask || '255.255.255.0');
+  if (left === null || right === null || mask === null) {
+    return false;
+  }
+  return (left & mask) === (right & mask);
+}
+
+const LAN_PRIORITY = '2122260223';
+const FALLBACK_PRIORITY = '100';
+
+function withPriority(line: string, priority: string): string {
+  const parts = line.split(/\s+/);
+  parts[3] = priority;
+  return parts.join(' ');
+}
+
+function keepLanPriority(priority: string): string {
+  const value = Number(priority);
+  if (Number.isFinite(value) && value >= 1000000) {
+    return priority;
+  }
+  return LAN_PRIORITY;
+}
+
+export function collectPrivateHostIps(candidates: IceCandidateLike[]): string[] {
+  const ips = candidates
+    .map(candidate => candidateParts(candidate.candidate || ''))
+    .filter(
+      candidate =>
+        candidate.protocol === 'udp' &&
+        candidate.type === 'host' &&
+        isPrivateIpv4(candidate.ip),
+    )
+    .map(candidate => candidate.ip);
+  return Array.from(new Set(ips));
+}
+
+export function preferNetworkIceCandidates(
+  candidates: IceCandidateLike[],
+  deviceIps: string[] = [],
+  subnetMask?: string,
+) {
+  const localPrivate = deviceIps.filter(isPrivateIpv4);
+  const parsed = candidates.map(candidate =>
+    candidateParts(candidate.candidate || ''),
   );
+  const onDeviceNetwork = (ip: string) =>
+    localPrivate.some(local => sameIpv4Network(local, ip, subnetMask));
+  const hasLanCandidate = parsed.some(
+    candidate =>
+      candidate.protocol === 'udp' &&
+      onDeviceNetwork(candidate.ip) &&
+      (candidate.type === 'host' || isPrivateIpv4(candidate.ip)),
+  );
+
+  if (!hasLanCandidate) {
+    return preferPublicIceCandidates(candidates);
+  }
+
+  return candidates
+    .map((candidate, index) => ({candidate, parsed: parsed[index]}))
+    .filter(({parsed: candidate}) => candidate.protocol === 'udp')
+    .map(({candidate, parsed: info}) => {
+      const line = normalizeIceCandidateLine(candidate.candidate || '');
+      const priority = onDeviceNetwork(info.ip)
+        ? keepLanPriority(info.priority)
+        : FALLBACK_PRIORITY;
+      return {
+        candidate: withPriority(line, priority),
+        sdpMid: candidate.sdpMid ?? '0',
+        sdpMLineIndex: candidate.sdpMLineIndex ?? 0,
+      };
+    });
 }
 
 export function preferPublicIceCandidates(candidates: IceCandidateLike[]) {
@@ -262,10 +345,16 @@ export function preferPublicIceCandidates(candidates: IceCandidateLike[]) {
 export function filterUnreachableRemoteCandidates(
   remoteCandidates: IceCandidateLike[],
   localCandidates: IceCandidateLike[],
+  network?: {ips?: string[]; mask?: string},
 ) {
-  const localIps = localCandidates
-    .map(candidate => candidateParts(candidate.candidate || '').ip)
-    .filter(Boolean);
+  const localIps = Array.from(
+    new Set(
+      localCandidates
+        .map(candidate => candidateParts(candidate.candidate || '').ip)
+        .concat(network?.ips || [])
+        .filter(Boolean),
+    ),
+  );
 
   return remoteCandidates.filter(candidate => {
     const line = candidate.candidate || '';
@@ -277,7 +366,9 @@ export function filterUnreachableRemoteCandidates(
       return false;
     }
     if (info.type === 'host' && isPrivateIpv4(info.ip)) {
-      return localIps.some(ip => sameIpv4Subnet(ip, info.ip));
+      return localIps.some(ip =>
+        sameIpv4Network(ip, info.ip, network?.mask),
+      );
     }
     return true;
   });

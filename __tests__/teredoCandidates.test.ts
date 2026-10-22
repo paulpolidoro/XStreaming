@@ -2,6 +2,7 @@ import {describe, expect, it} from '@jest/globals';
 import {
   expandTeredoCandidates,
   filterUnreachableRemoteCandidates,
+  preferNetworkIceCandidates,
   preferPublicIceCandidates,
 } from '../src/xCloud/teredoCandidates';
 
@@ -165,5 +166,50 @@ describe('expandTeredoCandidates', () => {
       'candidate:1 1 udp 100 10.0.0.1 34371 typ host',
       'candidate:3 1 udp 1685855999 185.222.213.36 52873 typ srflx raddr 10.0.0.1 rport 34371',
     ]);
+  });
+
+  it('keeps the LAN address ahead of the public address on the same network', () => {
+    const candidates = preferNetworkIceCandidates(
+      [
+        {
+          candidate: 'candidate:1 1 udp 2122063615 192.168.1.20 34371 typ host',
+          sdpMid: '0',
+          sdpMLineIndex: 0,
+        },
+        {
+          candidate:
+            'candidate:2 1 udp 1685855999 185.222.213.36 52873 typ srflx raddr 192.168.1.20 rport 34371',
+          sdpMid: '0',
+          sdpMLineIndex: 0,
+        },
+      ],
+      ['192.168.1.20'],
+      '255.255.255.0',
+    );
+
+    expect(candidates.map(({candidate}) => candidate)).toEqual([
+      'candidate:1 1 udp 2122063615 192.168.1.20 34371 typ host',
+      'candidate:2 1 udp 100 185.222.213.36 52873 typ srflx raddr 192.168.1.20 rport 34371',
+    ]);
+  });
+
+  it('keeps a console on the same subnet mask even across /24 boundaries', () => {
+    const remote = [
+      {candidate: 'candidate:1 1 udp 2122194687 192.168.1.105 9002 typ host'},
+      {
+        candidate:
+          'candidate:2 1 udp 1685987071 177.125.131.93 29172 typ srflx raddr 192.168.1.105 rport 9002',
+      },
+    ];
+    const local = [
+      {candidate: 'candidate:3 1 udp 2122063615 192.168.0.20 34371 typ host'},
+    ];
+
+    expect(
+      filterUnreachableRemoteCandidates(remote, local, {
+        ips: ['192.168.0.20'],
+        mask: '255.255.254.0',
+      }),
+    ).toEqual(remote);
   });
 });

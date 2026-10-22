@@ -6,21 +6,11 @@ import {
   Vibration,
   NativeEventEmitter,
   StyleSheet,
-  ScrollView,
-  Dimensions,
   ToastAndroid,
   Platform,
   AppState,
 } from 'react-native';
-import {
-  Portal,
-  Modal,
-  Card,
-  List,
-  Button,
-  IconButton,
-  TextInput,
-} from 'react-native-paper';
+import {IconButton} from 'react-native-paper';
 import {WebView} from 'react-native-webview';
 import Orientation from 'react-native-orientation-locker';
 import RNRestart from 'react-native-restart';
@@ -40,9 +30,6 @@ import VirtualGamepadEditor, {
   ButtonConfig,
 } from '../components/VirtualGamepadEditor';
 import PerfPanel from '../components/PerfPanel';
-import Display from '../components/Display';
-import FSRDisplay from '../components/FSRDisplay';
-import Audio from '../components/Audio';
 import {
   normalizeMacroLoopIntervalMs,
   normalizeMacroSteps,
@@ -55,6 +42,11 @@ import {
   suspendGamepadNavigation,
   resumeGamepadNavigation,
 } from '../utils/useGamepadNavigation';
+import {readDeviceLan} from '../utils/deviceNetwork';
+import {
+  filterUnreachableRemoteCandidates,
+  preferNetworkIceCandidates,
+} from '../xCloud/teredoCandidates';
 
 const log = debugFactory('StreamScreen');
 
@@ -71,6 +63,7 @@ const {
   SensorModule,
   GamepadSensorModule,
   PipManager,
+  NativeInputDialog,
 } = NativeModules;
 
 let defaultMaping: any = GAMEPAD_MAPING;
@@ -121,17 +114,11 @@ function StreamScreen({navigation, route}: any) {
   const [settings, setSettings] = React.useState<any>({});
   const [isExiting, setIsExiting] = React.useState(false);
   const [showModal, setShowModal] = React.useState(false);
-  const [showDisplayModal, setShowDisplayModal] = React.useState(false);
-  const [showFSRDisplayModal, setShowFSRDisplayModal] = React.useState(false);
-  const [showAudioModal, setShowAudioModal] = React.useState(false);
-  const [showMessageModal, setShowMessageModal] = React.useState(false);
   const [showVirtualGamepad, setShowVirtualGamepad] = React.useState(false);
   const [connectState, setConnectState] = React.useState('');
   const [performance, setPerformance] = React.useState<any>({});
   const [showPerformance, setShowPerformance] = React.useState(false);
   const [needPoweroff, setNeedPoweroff] = React.useState(false);
-  const [modalMaxHeight, setModalMaxHeight] = React.useState(250);
-  const [message, setMessage] = React.useState('');
   const [messageSending, setMessageSending] = React.useState(false);
   const [volume, setVolume] = React.useState(1);
   const [showGamepadEditor, setShowGamepadEditor] = React.useState(false);
@@ -139,7 +126,7 @@ function StreamScreen({navigation, route}: any) {
   const isRumblingRef = React.useRef(false);
   const lastRumbleTime = React.useRef(0);
   const lastRumbleValues = React.useRef({weak: 0, strong: 0, lt: 0, rt: 0});
-  const [editorProfile, setEditorProfile] = React.useState('');
+  const [editorProfile] = React.useState('');
   const [gamepadLayoutVersion, setGamepadLayoutVersion] = React.useState(0);
   const [openMicro, setOpenMicro] = React.useState(false);
   const [isInPictureInPicture, setIsInPictureInPicture] = React.useState(false);
@@ -160,6 +147,8 @@ function StreamScreen({navigation, route}: any) {
   const sensorEventListener = React.useRef<any>(undefined);
   const appStateSubscription = React.useRef<any>(undefined);
   const pipEventListener = React.useRef<any>(undefined);
+  const audioGainEventListener = React.useRef<any>(undefined);
+  const optionsDialogOpenRef = React.useRef(false);
   const isConnected = React.useRef(false);
   const macroSequenceTimersRef = React.useRef<any[]>([]);
   const activeMacroButtonsRef = React.useRef<Set<string>>(new Set());
@@ -168,21 +157,12 @@ function StreamScreen({navigation, route}: any) {
   const webviewRef = React.useRef(null);
 
   React.useEffect(() => {
-    let layoutTimer: any = null;
     const lockTimer = setTimeout(() => {
       Orientation.lockToLandscape();
-
-      layoutTimer = setTimeout(() => {
-        const {height: dHeight} = Dimensions.get('window');
-        setModalMaxHeight(dHeight - 50);
-      }, 100);
     }, 500);
 
     return () => {
       clearTimeout(lockTimer);
-      if (layoutTimer) {
-        clearTimeout(layoutTimer);
-      }
       Orientation.unlockAllOrientations();
     };
   }, [route.params?.sessionId, route.params?.streamType]);
@@ -352,10 +332,7 @@ function StreamScreen({navigation, route}: any) {
         if (nextIsInPip) {
           postData2Webview('hidePerformance', {});
           setShowModal(false);
-          setShowDisplayModal(false);
-          setShowFSRDisplayModal(false);
-          setShowAudioModal(false);
-          setShowMessageModal(false);
+          NativeInputDialog?.dismiss?.();
           setShowGamepadEditor(false);
           macroSequenceTimersRef.current.forEach(timeoutId =>
             clearTimeout(timeoutId),
@@ -367,6 +344,21 @@ function StreamScreen({navigation, route}: any) {
         ) {
           postData2Webview('showPerformance', {});
         }
+      },
+    );
+    audioGainEventListener.current = eventEmitter.addListener(
+      'NativeInputDialogAudioGainChange',
+      event => {
+        const nextGain = Math.max(
+          0,
+          Math.min(10, Math.round(Number(event?.value ?? 1))),
+        );
+        setVolume(nextGain);
+        webviewRef.current &&
+          // @ts-ignore
+          webviewRef.current.postMessage(
+            JSON.stringify({type: 'adjustVolume', value: nextGain}),
+          );
       },
     );
 
@@ -786,7 +778,10 @@ function StreamScreen({navigation, route}: any) {
       sensorEventListener.current && sensorEventListener.current.remove();
       appStateSubscription.current && appStateSubscription.current.remove();
       pipEventListener.current && pipEventListener.current.remove();
+      audioGainEventListener.current && audioGainEventListener.current.remove();
       timer.current && clearInterval(timer.current);
+      NativeInputDialog?.dismiss?.();
+      NativeInputDialog?.resetBrightness?.();
       PipManager?.setAutoPipEnabled?.(false);
       GamepadManager.setCurrentScreen('');
       resumeGamepadNavigation();
@@ -814,16 +809,15 @@ function StreamScreen({navigation, route}: any) {
     console.log('powerOff:', powerOffRes);
   };
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = async (rawMessage: string) => {
     const webApi = new WebApi(webToken);
     setMessageSending(true);
-    let text = message.trim();
-    if (message.length > 100) {
+    let text = (rawMessage || '').trim();
+    if (text.length > 100) {
       text = text.substring(0, 100);
     }
     try {
       await webApi.sendText(route.params?.sessionId, text);
-      setMessage('');
       ToastAndroid.show(t('Sended'), ToastAndroid.SHORT);
     } catch (e) {}
     setMessageSending(false);
@@ -975,12 +969,38 @@ function StreamScreen({navigation, route}: any) {
     }
     if (type === 'sendICEReady') {
       log.info('sendICEReady');
-      // SendICE
-      streamApi
-        .sendICECandidates(message)
-        .then(candidates => {
-          log.info('Client - ICE Candidates:', JSON.stringify(candidates));
-          postData2Webview('sendIceEnd', candidates);
+      const localSource = Array.isArray(message) ? message : [];
+      readDeviceLan(localSource)
+        .then(deviceLan => {
+          log.info(
+            'Device LAN:',
+            deviceLan.ips.join(',') || 'none',
+            deviceLan.mask || '255.255.255.0',
+          );
+          const localCandidates = localSource.length
+            ? preferNetworkIceCandidates(
+                localSource,
+                deviceLan.ips,
+                deviceLan.mask,
+              )
+            : message;
+          return streamApi.sendICECandidates(localCandidates).then(candidates => {
+            log.info('Client - ICE Candidates:', JSON.stringify(candidates));
+            const remoteSource = Array.isArray(candidates) ? candidates : [];
+            const reachable = filterUnreachableRemoteCandidates(
+              remoteSource,
+              localSource,
+              deviceLan,
+            );
+            postData2Webview(
+              'sendIceEnd',
+              preferNetworkIceCandidates(
+                reachable,
+                deviceLan.ips,
+                deviceLan.mask,
+              ),
+            );
+          });
         })
         .catch(e => {
           Alert.alert(t('Warning'), '[sendICECandidates] fail:' + e, [
@@ -1535,26 +1555,6 @@ function StreamScreen({navigation, route}: any) {
     }
   };
 
-  const requestVirtualGamepad = () => {
-    const isNativeLikeKernel =
-      settings.gamepad_kernal === 'Native' || settings.gamepad_kernal === 'SDL';
-    // Close
-    if (showVirtualGamepad) {
-      clearMacroTimers();
-      setShowVirtualGamepad(false);
-      if (!isNativeLikeKernel) {
-        timer.current && clearInterval(timer.current);
-      }
-    } else {
-      setShowVirtualGamepad(true);
-      if (!isNativeLikeKernel) {
-        timer.current = setInterval(() => {
-          postData2Webview('gamepad', gpState);
-        }, 1000 / settings.polling_rate);
-      }
-    }
-  };
-
   const requestExit = () => {
     clearMacroTimers();
     setShowPerformance(false);
@@ -1567,44 +1567,230 @@ function StreamScreen({navigation, route}: any) {
     }
   };
 
-  const background = {
-    borderless: false,
-    color: 'rgba(255, 255, 255, 0.2)',
-    foreground: true,
-  };
+  const showNativeOptionsDialog = React.useCallback(
+    async (items: Array<{id: string; title: string}>, options: any = {}) => {
+      if (!NativeInputDialog?.showOptions) {
+        return null;
+      }
 
-  const handleDisplayOptionsChange = React.useCallback(
-    options => {
-      postData2Webview('refreshVideo', options);
-      settings.display_options = options;
-      // setSettings(settings);
-      saveSettings(settings);
+      try {
+        return await NativeInputDialog.showOptions({
+          items,
+          ...options,
+        });
+      } catch (error) {
+        return null;
+      }
     },
-    [settings],
+    [],
   );
 
-  const handleFSRDisplayOptionsChange = React.useCallback(
-    options => {
-      postData2Webview('adjustSharpness', options.sharpness);
-      settings.fsr_display_options = options;
-      saveSettings(settings);
-    },
-    [settings],
-  );
+  const openSendTextDialog = React.useCallback(async () => {
+    if (messageSending || !NativeInputDialog?.showTextInput) {
+      return;
+    }
 
-  const handleAudioChange = React.useCallback(value => {
-    postData2Webview('adjustVolume', value);
-    setVolume(value);
-  }, []);
+    const result = await NativeInputDialog.showTextInput({
+      title: t('Send text'),
+      hint: t('Text'),
+      text: '',
+      maxLength: 100,
+      confirmText: t('Send'),
+      cancelText: t('Cancel'),
+    }).catch(() => null);
+
+    if (result?.action === 'confirm') {
+      await handleSendMessage(result.text || '');
+    }
+  }, [handleSendMessage, messageSending, t]);
+
+  const saveSessionAndDisconnect = React.useCallback(() => {
+    clearMacroTimers();
+    setShowPerformance(false);
+    setShowVirtualGamepad(false);
+    setShowModal(false);
+    Orientation.unlockAllOrientations();
+    FullScreenManager.immersiveModeOff();
+    NativeInputDialog?.resetBrightness?.();
+    navigation.navigate({
+      name: route.params?.streamType === 'cloud' ? 'Cloud' : 'Home',
+      params: {needRefresh: false, sessionReport: false},
+    });
+  }, [navigation, route.params?.streamType]);
+
+  const openOptionsModal = React.useCallback(async () => {
+    if (optionsDialogOpenRef.current) {
+      return;
+    }
+    if (isInPictureInPicture) {
+      handleCloseModal();
+      return;
+    }
+
+    optionsDialogOpenRef.current = true;
+    GamepadManager.setCurrentScreen('');
+    resumeGamepadNavigation();
+
+    const nativeLikeKernel =
+      settings.gamepad_kernal === 'Native' || settings.gamepad_kernal === 'SDL';
+    const usbMode = !!route.params?.isUsbMode;
+    const items: Array<{
+      id: string;
+      title: string;
+      type?: 'switch';
+      checked?: boolean;
+      danger?: boolean;
+    }> = [];
+    if (connectState === CONNECTED) {
+      items.push({
+        id: 'togglePerformance',
+        title: t('Performance info'),
+        type: 'switch',
+        checked: showPerformance,
+      });
+      items.push({
+        id: 'toggleVirtualGamepad',
+        title: t('Virtual gamepad'),
+        type: 'switch',
+        checked: showVirtualGamepad,
+      });
+      if (settings.enable_microphone) {
+        items.push({
+          id: 'toggleMicrophone',
+          title: openMicro ? t('Close Microphone') : t('Open Microphone'),
+        });
+      }
+      if (route.params?.streamType !== 'cloud') {
+        items.push({
+          id: 'sendText',
+          title: t('Send text'),
+        });
+      }
+      if (settings.power_on && route.params?.streamType !== 'cloud') {
+        items.push({
+          id: 'disconnectPowerOff',
+          title: t('Disconnect and power off'),
+        });
+      }
+      if (route.params?.streamType === 'cloud') {
+        items.push({
+          id: 'saveSessionAndDisconnect',
+          title: t('Save session & disconnect'),
+        });
+      }
+    }
+    if (connectState === CONNECTED && PipManager?.enterPipMode) {
+      items.push({
+        id: 'minimize',
+        title: t('Minimize'),
+      });
+    }
+    items.push({
+      id: 'disconnect',
+      title: t('Disconnect'),
+      danger: true,
+    });
+
+    const switchListener = new NativeEventEmitter().addListener(
+      'NativeInputDialogSwitchChange',
+      event => {
+        const checked = !!event?.checked;
+        if (event?.id === 'togglePerformance') {
+          setShowPerformance(checked);
+          saveSettings({...getSettings(), show_performance: checked});
+          if (settings.gamepad_kernal === 'Web') {
+            postData2Webview(
+              checked ? 'showPerformance' : 'hidePerformance',
+              {},
+            );
+          }
+        } else if (event?.id === 'toggleVirtualGamepad') {
+          if (!checked) {
+            clearMacroTimers();
+            if (!nativeLikeKernel && !usbMode && timer.current) {
+              clearInterval(timer.current);
+              timer.current = null;
+            }
+          } else if (!nativeLikeKernel && !usbMode && !timer.current) {
+            timer.current = setInterval(() => {
+              postData2Webview('gamepad', gpState);
+            }, 1000 / (settings.polling_rate || 60));
+          }
+          setShowVirtualGamepad(checked);
+          saveSettings({...getSettings(), show_virtual_gamead: checked});
+        }
+      },
+    );
+    const result = await showNativeOptionsDialog(items, {
+      showAudioGainControl: connectState === CONNECTED,
+      audioGain: volume,
+      audioGainTitle: t('Volume'),
+      showBrightnessControl: true,
+      brightnessTitle: t('Brightness'),
+    });
+    switchListener.remove();
+    optionsDialogOpenRef.current = false;
+
+    if (result?.action !== 'select') {
+      handleCloseModal();
+      return;
+    }
+
+    handleCloseModal();
+
+    switch (result.id) {
+      case 'toggleMicrophone':
+        setOpenMicro(!openMicro);
+        postData2Webview(openMicro ? 'closeMicro' : 'openMicro', {});
+        break;
+      case 'minimize':
+        PipManager?.enterPipMode?.().catch(() => {});
+        break;
+      case 'sendText':
+        openSendTextDialog();
+        break;
+      case 'disconnectPowerOff':
+        setNeedPoweroff(true);
+        requestExit();
+        break;
+      case 'saveSessionAndDisconnect':
+        saveSessionAndDisconnect();
+        break;
+      case 'disconnect':
+        requestExit();
+        break;
+      default:
+        break;
+    }
+  }, [
+    connectState,
+    handleCloseModal,
+    isInPictureInPicture,
+    openMicro,
+    openSendTextDialog,
+    route.params?.isUsbMode,
+    route.params?.streamType,
+    saveSessionAndDisconnect,
+    settings.enable_microphone,
+    settings.gamepad_kernal,
+    settings.polling_rate,
+    settings.power_on,
+    showNativeOptionsDialog,
+    showPerformance,
+    showVirtualGamepad,
+    t,
+    volume,
+  ]);
+
+  React.useEffect(() => {
+    if (showModal) {
+      openOptionsModal();
+    }
+  }, [openOptionsModal, showModal]);
 
   const getActiveProfileName = React.useCallback(() => {
     return settings.custom_virtual_gamepad || LIVE_GAMEPAD_PROFILE;
   }, [settings.custom_virtual_gamepad]);
-
-  const handleOpenGamepadEditor = () => {
-    setEditorProfile(getActiveProfileName());
-    setShowGamepadEditor(true);
-  };
 
   const handleSaveGamepadLayout = (layout: ButtonConfig[]) => {
     const profileName = editorProfile || getActiveProfileName();
@@ -1669,260 +1855,6 @@ function StreamScreen({navigation, route}: any) {
         onCancel={() => setShowGamepadEditor(false)}
       />
 
-      <Portal>
-        <Modal
-          visible={showDisplayModal && !isInPictureInPicture}
-          onDismiss={() => {
-            setShowDisplayModal(false);
-          }}
-          contentContainerStyle={styles.modal}>
-          <Card>
-            <Card.Content>
-              <Display
-                options={settings.display_options}
-                onChange={handleDisplayOptionsChange}
-              />
-            </Card.Content>
-          </Card>
-        </Modal>
-      </Portal>
-
-      <Portal>
-        <Modal
-          visible={showFSRDisplayModal && !isInPictureInPicture}
-          onDismiss={() => {
-            setShowFSRDisplayModal(false);
-          }}
-          contentContainerStyle={styles.modal}>
-          <Card>
-            <Card.Content>
-              <FSRDisplay
-                options={settings.fsr_display_options}
-                onChange={handleFSRDisplayOptionsChange}
-              />
-            </Card.Content>
-          </Card>
-        </Modal>
-      </Portal>
-
-      <Portal>
-        <Modal
-          visible={showAudioModal && !isInPictureInPicture}
-          onDismiss={() => {
-            setShowAudioModal(false);
-          }}
-          contentContainerStyle={styles.modal}>
-          <Card>
-            <Card.Content>
-              <Audio value={volume} onChange={handleAudioChange} />
-            </Card.Content>
-          </Card>
-        </Modal>
-      </Portal>
-
-      <Portal>
-        <Modal
-          visible={showMessageModal && !isInPictureInPicture}
-          onDismiss={() => {
-            setShowMessageModal(false);
-          }}
-          contentContainerStyle={styles.modal}>
-          <Card>
-            <Card.Content>
-              <TextInput
-                label={t('Text')}
-                value={message}
-                onChangeText={text => setMessage(text)}
-              />
-              <Button
-                mode="contained"
-                loading={messageSending}
-                style={{marginTop: 10}}
-                onPress={handleSendMessage}>
-                {t('Send')}
-              </Button>
-            </Card.Content>
-          </Card>
-        </Modal>
-      </Portal>
-
-      <Portal>
-        <Modal
-          visible={showModal && !isInPictureInPicture}
-          onDismiss={() => handleCloseModal()}
-          contentContainerStyle={styles.modal}>
-          <Card>
-            <Card.Content>
-              <ScrollView style={{maxHeight: modalMaxHeight}}>
-                <List.Section>
-                  {connectState === CONNECTED && (
-                    <List.Item
-                      title={t('Toggle Performance')}
-                      background={background}
-                      onPress={() => {
-                        if (settings.gamepad_kernal === 'Web') {
-                          setShowPerformance(!showPerformance);
-                          setTimeout(() => {
-                            handleToggleWebviewPerformance();
-                            webviewRef.current &&
-                              // @ts-ignore
-                              webviewRef.current.requestFocus();
-                          }, 100);
-                        } else {
-                          setShowPerformance(!showPerformance);
-                        }
-                        handleCloseModal();
-                      }}
-                    />
-                  )}
-
-                  {connectState === CONNECTED && isNativeLikeKernel && (
-                    <List.Item
-                      title={t('Toggle Virtual Gamepad')}
-                      background={background}
-                      onPress={() => {
-                        requestVirtualGamepad();
-                        handleCloseModal();
-                      }}
-                    />
-                  )}
-
-                  {connectState === CONNECTED &&
-                    isNativeLikeKernel &&
-                    showVirtualGamepad && (
-                      <List.Item
-                        title={t('Edit Virtual Gamepad')}
-                        background={background}
-                        onPress={() => {
-                          handleCloseModal();
-                          handleOpenGamepadEditor();
-                        }}
-                      />
-                    )}
-
-                  {connectState === CONNECTED && (
-                    <List.Item
-                      title={t('Display settings')}
-                      background={background}
-                      onPress={() => {
-                        if (settings.fsr) {
-                          setShowFSRDisplayModal(true);
-                        } else {
-                          setShowDisplayModal(true);
-                        }
-                        handleCloseModal();
-                      }}
-                    />
-                  )}
-
-                  {connectState === CONNECTED &&
-                    settings.enable_audio_control && (
-                      <List.Item
-                        title={t('Audio_volume_title')}
-                        background={background}
-                        onPress={() => {
-                          setShowAudioModal(true);
-                          handleCloseModal();
-                        }}
-                      />
-                    )}
-
-                  {connectState === CONNECTED && settings.enable_microphone && (
-                    <List.Item
-                      title={
-                        openMicro ? t('Close Microphone') : t('Open Microphone')
-                      }
-                      background={background}
-                      onPress={() => {
-                        setOpenMicro(!openMicro);
-                        if (!openMicro) {
-                          postData2Webview('openMicro', {});
-                        } else {
-                          postData2Webview('closeMicro', {});
-                        }
-                        handleCloseModal();
-                      }}
-                    />
-                  )}
-
-                  {connectState === CONNECTED && (
-                    <List.Item
-                      title={t('Press Nexus')}
-                      background={background}
-                      onPress={() => {
-                        if (isNativeLikeKernel) {
-                          gpState.Nexus = 1;
-                          setTimeout(() => {
-                            gpState.Nexus = 0;
-                          }, 120);
-                        } else {
-                          postData2Webview('pressNexus', {});
-                        }
-                        handleCloseModal();
-                      }}
-                    />
-                  )}
-                  {connectState === CONNECTED &&
-                    route.params?.streamType !== 'cloud' && (
-                      <List.Item
-                        title={t('Long press Nexus')}
-                        background={background}
-                        onPress={() => {
-                          if (isNativeLikeKernel) {
-                            gpState.Nexus = 1;
-                            setTimeout(() => {
-                              gpState.Nexus = 0;
-                            }, 1000);
-                          } else {
-                            postData2Webview('longPressNexus', {});
-                          }
-                          handleCloseModal();
-                        }}
-                      />
-                    )}
-
-                  {connectState === CONNECTED &&
-                    route.params?.streamType !== 'cloud' && (
-                      <List.Item
-                        title={t('Send text')}
-                        background={background}
-                        onPress={() => {
-                          setShowMessageModal(true);
-                          handleCloseModal();
-                        }}
-                      />
-                    )}
-
-                  {connectState === CONNECTED &&
-                    settings.power_on &&
-                    route.params?.streamType !== 'cloud' && (
-                      <List.Item
-                        title={t('Disconnect and power off')}
-                        background={background}
-                        onPress={() => {
-                          setNeedPoweroff(true);
-                          requestExit();
-                        }}
-                      />
-                    )}
-
-                  <List.Item
-                    title={t('Disconnect')}
-                    background={background}
-                    onPress={requestExit}
-                  />
-                  <List.Item
-                    title={t('Cancel')}
-                    background={background}
-                    onPress={() => handleCloseModal()}
-                  />
-                </List.Section>
-              </ScrollView>
-            </Card.Content>
-          </Card>
-        </Modal>
-      </Portal>
-
       {settings.show_menu && !isInPictureInPicture && (
         <View style={styles.quickMenu}>
           <IconButton
@@ -1965,24 +1897,6 @@ function StreamScreen({navigation, route}: any) {
 }
 
 const styles = StyleSheet.create({
-  card: {
-    width: 300,
-    padding: 5,
-  },
-  modal: {
-    // backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    marginLeft: '32%',
-    marginRight: '32%',
-  },
-  backdrop: {
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-  },
-  title: {
-    paddingBottom: 10,
-  },
-  content: {
-    paddingTop: 10,
-  },
   quickMenu: {
     position: 'absolute',
     right: 5,

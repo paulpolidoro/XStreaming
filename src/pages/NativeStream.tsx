@@ -21,8 +21,9 @@ import {useSelector} from 'react-redux';
 import XcloudApi from '../xCloud';
 import {
   filterUnreachableRemoteCandidates,
-  preferPublicIceCandidates,
+  preferNetworkIceCandidates,
 } from '../xCloud/teredoCandidates';
+import {readDeviceLan} from '../utils/deviceNetwork';
 import WebApi from '../web';
 import {getSettings, saveSettings} from '../store/settingStore';
 import {saveSettings as saveGamepadLayout} from '../store/gamepadStore';
@@ -1858,9 +1859,18 @@ export function NativeStreamScreenBase({
                 const sdpDetails = JSON.parse(sdpResponse.exchangeResponse);
                 webrtcClient.setRemoteOffer(sdpDetails.sdp).then(() => {
                   setLoadingText(`${t('Ready to send ICE...')}`);
-                  webrtcClient.waitForIceGathering().then(iceCandidates => {
-                    const localCandidates =
-                      preferPublicIceCandidates(iceCandidates);
+                  webrtcClient.waitForIceGathering().then(async iceCandidates => {
+                    const deviceLan = await readDeviceLan(iceCandidates);
+                    log.info(
+                      'Device LAN:',
+                      deviceLan.ips.join(',') || 'none',
+                      deviceLan.mask || '255.255.255.0',
+                    );
+                    const localCandidates = preferNetworkIceCandidates(
+                      iceCandidates,
+                      deviceLan.ips,
+                      deviceLan.mask,
+                    );
                     streamApi
                       .sendICECandidates(localCandidates)
                       .then(iceDetails => {
@@ -1868,10 +1878,16 @@ export function NativeStreamScreenBase({
                           'Client - ICE iceDetails:',
                           JSON.stringify(iceDetails),
                         );
+                        const reachable = filterUnreachableRemoteCandidates(
+                          iceDetails,
+                          iceCandidates,
+                          deviceLan,
+                        );
                         webrtcClient.setIceCandidates(
-                          filterUnreachableRemoteCandidates(
-                            iceDetails,
-                            iceCandidates,
+                          preferNetworkIceCandidates(
+                            reachable,
+                            deviceLan.ips,
+                            deviceLan.mask,
                           ),
                         );
                         setLoadingText(`${t('Exchange ICE successfully...')}`);
