@@ -18,9 +18,9 @@ export default {
     ConfigTransferUnavailable: '当前设备不支持配置转移',
     ExportDesc: '导出配置',
     ExportTips:
-      '将账号令牌、设置、自定义虚拟按键和宏设置导出为明文 JSON 文件。',
+      '将账号令牌、设置、自定义虚拟按键和宏设置保存为 JSON 文件，存到 Downloads/XStreaming。',
     ExportSettings: '导出设置',
-    ExportSuccess: '导出成功',
+    ExportSuccess: '已保存到 Downloads/XStreaming',
     ExportFail: '导出失败',
     ImportDesc: '导入配置',
     ImportTips: '导入此前导出的 XStreaming JSON 文件，恢复后会重启应用。',

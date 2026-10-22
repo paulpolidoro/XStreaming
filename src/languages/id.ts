@@ -20,9 +20,9 @@ export default {
       'Transfer konfigurasi tidak tersedia di perangkat ini.',
     ExportDesc: 'Ekspor konfigurasi',
     ExportTips:
-      'Mengekspor token akun, pengaturan, tombol virtual kustom, dan pengaturan makro ke dalam file JSON.',
+      'Menyimpan token akun, pengaturan, tombol virtual, dan makro sebagai file JSON di Downloads/XStreaming.',
     ExportSettings: 'Ekspor pengaturan',
-    ExportSuccess: 'Ekspor berhasil',
+    ExportSuccess: 'Disimpan di Downloads/XStreaming',
     ExportFail: 'Ekspor gagal',
     ImportDesc: 'Impor konfigurasi',
     ImportTips:

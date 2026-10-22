@@ -102,7 +102,7 @@ function TransferScreen({navigation}: any) {
   });
 
   const handleExport = async () => {
-    if (!ConfigTransferModule?.createAndShareConfigFile) {
+    if (!ConfigTransferModule?.saveConfigFile) {
       Alert.alert(t('Warning'), t('ConfigTransferUnavailable'));
       return;
     }
@@ -110,11 +110,11 @@ function TransferScreen({navigation}: any) {
     try {
       const config = buildExportConfig();
       const fileName = `xstreaming_export_${Date.now()}.json`;
-      await ConfigTransferModule.createAndShareConfigFile(
+      const savedPath = await ConfigTransferModule.saveConfigFile(
         fileName,
         JSON.stringify(config, null, 2),
       );
-      Alert.alert(t('Warning'), t('ExportSuccess'));
+      Alert.alert(t('Success'), `${t('ExportSuccess')}\n${savedPath}`);
     } catch (error: any) {
       Alert.alert(t('Warning'), `${t('ExportFail')}: ${error.message}`);
     }

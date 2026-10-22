@@ -71,6 +71,7 @@ public class FullScreenManager extends ReactContextBaseJavaModule {
                     reactActivity.getWindow()
                             .getDecorView()
                             .setSystemUiVisibility(flags);
+                    requestNavigationBarPadding(reactActivity);
                 }
             });
         }
@@ -87,8 +88,15 @@ public class FullScreenManager extends ReactContextBaseJavaModule {
                     reactActivity.getWindow()
                             .getDecorView()
                             .setSystemUiVisibility(flag);
+                    requestNavigationBarPadding(reactActivity);
                 }
             });
+        }
+    }
+
+    private void requestNavigationBarPadding(Activity activity) {
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).requestNavigationBarPadding();
         }
     }
 

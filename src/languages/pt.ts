@@ -13,6 +13,24 @@ export default {
     Close: 'Fechar',
     More: 'Mais',
     Success: 'Sucesso',
+    ConfigTransfer: 'Transferência de configurações',
+    ConfigTransferDescription:
+      'Exporta ou importa a conta, as configurações, o controle virtual e as macros.',
+    ConfigTransferUnavailable:
+      'A transferência de configurações não está disponível neste aparelho.',
+    ExportDesc: 'Exportar configurações',
+    ExportTips:
+      'Salva os tokens da conta, as configurações, os botões virtuais e as macros em um arquivo JSON na pasta Downloads/XStreaming.',
+    ExportSettings: 'Exportar configurações',
+    ExportSuccess: 'Configurações salvas em Downloads/XStreaming',
+    ExportFail: 'Falha ao exportar',
+    ImportDesc: 'Importar configurações',
+    ImportTips:
+      'Importa um arquivo JSON exportado do XStreaming e reinicia o aplicativo depois da recuperação.',
+    ImportSettings: 'Importar configurações',
+    ImportSuccess: 'Importação concluída',
+    ImportFail: 'Falha ao importar',
+    UserCancel: 'Cancelado',
     GameMap: 'Mapeamento do controle',
     NoLogin: 'Você ainda não entrou. Faça login.',
     'Fetching user info...': 'Obtendo informações da conta...',

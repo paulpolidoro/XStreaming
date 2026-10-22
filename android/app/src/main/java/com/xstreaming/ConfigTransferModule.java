@@ -1,11 +1,15 @@
 package com.xstreaming;
 
 import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
 
 import androidx.annotation.Nullable;
-import androidx.core.content.FileProvider;
 
 import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.BaseActivityEventListener;
@@ -19,11 +23,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 public class ConfigTransferModule extends ReactContextBaseJavaModule {
     private static final String MODULE_NAME = "ConfigTransferModule";
-    private static final String EXPORT_DIR_NAME = "exports";
     private static final int IMPORT_CONFIG_REQUEST_CODE = 7301;
 
     private final ReactApplicationContext reactContext;
@@ -71,7 +75,7 @@ public class ConfigTransferModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void createAndShareConfigFile(String fileName, String content, Promise promise) {
+    public void saveConfigFile(String fileName, String content, Promise promise) {
         if (content == null || content.trim().isEmpty()) {
             promise.reject("EMPTY_CONFIG", "Config content is empty");
             return;
@@ -79,44 +83,68 @@ public class ConfigTransferModule extends ReactContextBaseJavaModule {
 
         new Thread(() -> {
             try {
-                File exportDir = new File(reactContext.getCacheDir(), EXPORT_DIR_NAME);
-                if (!exportDir.exists() && !exportDir.mkdirs()) {
-                    throw new IllegalStateException("Unable to create export cache directory");
-                }
-
                 String safeName = buildSafeJsonName(fileName);
-                File configFile = new File(exportDir, safeName);
-                try (FileOutputStream outputStream = new FileOutputStream(configFile)) {
-                    outputStream.write(content.getBytes(StandardCharsets.UTF_8));
-                }
-
-                Uri uri = FileProvider.getUriForFile(
-                        reactContext,
-                        reactContext.getPackageName() + ".provider",
-                        configFile
-                );
-
-                UiThreadUtil.runOnUiThread(() -> {
-                    try {
-                        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-                        shareIntent.setType("application/json");
-                        shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
-                        shareIntent.putExtra(Intent.EXTRA_SUBJECT, safeName);
-                        shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-                        Intent chooser = Intent.createChooser(shareIntent, safeName);
-                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        reactContext.startActivity(chooser);
-                        promise.resolve(configFile.getAbsolutePath());
-                    } catch (Exception e) {
-                        promise.reject("SHARE_CONFIG_FAILED", e.getMessage(), e);
-                    }
-                });
+                String savedPath = writeConfigToDownloads(safeName, content);
+                UiThreadUtil.runOnUiThread(() -> promise.resolve(savedPath));
             } catch (Exception e) {
                 UiThreadUtil.runOnUiThread(() ->
                         promise.reject("EXPORT_CONFIG_FAILED", e.getMessage(), e));
             }
         }).start();
+    }
+
+    private String writeConfigToDownloads(String safeName, String content) throws Exception {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentResolver resolver = reactContext.getContentResolver();
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
+            values.put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/XStreaming");
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+            Uri item = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (item == null) {
+                values.remove(MediaStore.MediaColumns.RELATIVE_PATH);
+                item = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            }
+            if (item == null) {
+                throw new IllegalStateException("Unable to create file in Downloads");
+            }
+
+            try (OutputStream outputStream = resolver.openOutputStream(item)) {
+                if (outputStream == null) {
+                    throw new IllegalStateException("Unable to open Downloads file");
+                }
+                outputStream.write(bytes);
+            }
+
+            ContentValues published = new ContentValues();
+            published.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(item, published, null, null);
+            return Environment.DIRECTORY_DOWNLOADS + "/XStreaming/" + safeName;
+        }
+
+        File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        File exportDir = new File(downloads, "XStreaming");
+        if (!exportDir.exists() && !exportDir.mkdirs()) {
+            File appDownloads = reactContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if (appDownloads == null) {
+                throw new IllegalStateException("Unable to create Downloads directory");
+            }
+            exportDir = new File(appDownloads, "XStreaming");
+            if (!exportDir.exists() && !exportDir.mkdirs()) {
+                throw new IllegalStateException("Unable to create Downloads directory");
+            }
+        }
+
+        File configFile = new File(exportDir, safeName);
+        try (FileOutputStream outputStream = new FileOutputStream(configFile)) {
+            outputStream.write(bytes);
+        }
+        return configFile.getAbsolutePath();
     }
 
     @ReactMethod

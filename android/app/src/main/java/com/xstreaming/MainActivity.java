@@ -31,6 +31,7 @@ import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
 import android.view.View;
+import android.graphics.Rect;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.os.IBinder;
@@ -42,6 +43,10 @@ import android.os.SystemClock;
 import com.xstreaming.input.UsbDriverService;
 import com.xstreaming.input.ControllerHandler;
 import com.xstreaming.utils.Vector2d;
+
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -956,6 +961,9 @@ public class MainActivity extends ReactActivity implements UsbDriverService.UsbD
             usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
 
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+    installNavigationBarGuard();
 
     try {
       IntentFilter navFilter = new IntentFilter("com.xstreaming.ACTION_MENU_NAV");
@@ -1014,6 +1022,96 @@ public class MainActivity extends ReactActivity implements UsbDriverService.UsbD
       }
     }
     checkAndEmitGamepadConnection();
+    requestNavigationBarPadding();
+  }
+
+  @Override
+  public void onWindowFocusChanged(boolean hasFocus) {
+    super.onWindowFocusChanged(hasFocus);
+    if (hasFocus) {
+      requestNavigationBarPadding();
+    }
+  }
+
+  @Override
+  public void onConfigurationChanged(Configuration newConfig) {
+    super.onConfigurationChanged(newConfig);
+    requestNavigationBarPadding();
+  }
+
+  /**
+   * Keeps screen content above the Android navigation bar (home / back / recents).
+   * Touches in that region belong to the system, so buttons drawn underneath cannot be pressed.
+   * While immersive mode hides the bar, the inset drops to zero and the padding is removed.
+   */
+  private void installNavigationBarGuard() {
+    final View content = findViewById(android.R.id.content);
+    if (content == null) {
+      return;
+    }
+    ViewCompat.setOnApplyWindowInsetsListener(content, (view, insets) -> {
+      WindowInsetsCompat root = ViewCompat.getRootWindowInsets(view);
+      applyNavigationBarPadding(view, root != null ? root : insets);
+      return insets;
+    });
+    content.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+      if ((right - left) != (oldRight - oldLeft) || (bottom - top) != (oldBottom - oldTop)) {
+        WindowInsetsCompat root = ViewCompat.getRootWindowInsets(view);
+        if (root != null) {
+          applyNavigationBarPadding(view, root);
+        }
+      }
+    });
+    ViewCompat.requestApplyInsets(content);
+  }
+
+  public void requestNavigationBarPadding() {
+    final View content = findViewById(android.R.id.content);
+    if (content == null) {
+      return;
+    }
+    content.post(() -> {
+      WindowInsetsCompat root = ViewCompat.getRootWindowInsets(content);
+      if (root != null) {
+        applyNavigationBarPadding(content, root);
+      } else {
+        ViewCompat.requestApplyInsets(content);
+      }
+    });
+  }
+
+  private void applyNavigationBarPadding(View content, WindowInsetsCompat insets) {
+    if (content.getWidth() == 0 || content.getHeight() == 0) {
+      return;
+    }
+
+    int padLeft = 0;
+    int padRight = 0;
+    int padBottom = 0;
+    if (insets.isVisible(WindowInsetsCompat.Type.navigationBars())) {
+      Insets nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars());
+      Rect bounds = getWindowBounds();
+      int[] location = new int[2];
+      content.getLocationOnScreen(location);
+      padLeft = Math.max(0, (bounds.left + nav.left) - location[0]);
+      padRight = Math.max(0, (location[0] + content.getWidth()) - (bounds.right - nav.right));
+      padBottom = Math.max(0, (location[1] + content.getHeight()) - (bounds.bottom - nav.bottom));
+    }
+
+    if (content.getPaddingLeft() != padLeft
+        || content.getPaddingRight() != padRight
+        || content.getPaddingBottom() != padBottom) {
+      content.setPadding(padLeft, content.getPaddingTop(), padRight, padBottom);
+    }
+  }
+
+  private Rect getWindowBounds() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      return getWindowManager().getCurrentWindowMetrics().getBounds();
+    }
+    android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+    getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+    return new Rect(0, 0, metrics.widthPixels, metrics.heightPixels);
   }
 
   private void checkAndEmitGamepadConnection() {

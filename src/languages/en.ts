@@ -19,9 +19,9 @@ export default {
     ConfigTransferUnavailable: 'Config transfer is unavailable on this device.',
     ExportDesc: 'Export configuration',
     ExportTips:
-      'Exports account tokens, settings, custom virtual buttons, and macro settings as a plain JSON file.',
+      'Saves account tokens, settings, custom virtual buttons, and macro settings as a JSON file in Downloads/XStreaming.',
     ExportSettings: 'Export settings',
-    ExportSuccess: 'Export successful',
+    ExportSuccess: 'Saved to Downloads/XStreaming',
     ExportFail: 'Export failed',
     ImportDesc: 'Import configuration',
     ImportTips:
